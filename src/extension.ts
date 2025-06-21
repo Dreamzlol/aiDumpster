@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { GitDiffParser } from './gitDiffParser';
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new PastrViewProvider(context.extensionUri);
@@ -96,7 +97,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
 
 
         let fileTree = this.generateFileTree(filePaths, workspacePath);
-        let content = `# Task\n\n- ${prompt}\n\n# File Map\n\n${fileTree}\n\n# Output Format\n\n- Respond with a valid git diff format. Do not include any other text or explanations. The diff should be directly applicable with 'git apply'.\n\n# Context\n\n- The following files are related to the Task.\n\n`;
+        let content = `# Task\n\n- ${prompt}\n\n# File Map\n\n${fileTree}\n\n# Output Format\n\n- Respond ONLY with a valid git diff format. Do not include any other text, explanations, or markdown code blocks.\n- The diff must be directly applicable and parseable by standard git diff parsers.\n- Use proper git diff headers for each file operation:\n  - For new files: \`diff --git a/path b/path\` followed by \`new file mode 100644\`\n  - For deleted files: \`diff --git a/path b/path\` followed by \`deleted file mode 100644\`\n  - For renamed files: \`diff --git a/old b/new\` followed by \`similarity index\` and \`rename from/to\`\n  - For modified files: \`diff --git a/path b/path\` followed by \`index\` line\n- Include proper hunk headers with line numbers: \`@@ -start,count +start,count @@\`\n- Prefix added lines with \`+\`, deleted lines with \`-\`, and unchanged context lines with a space\n- Ensure all file paths are relative to the workspace root\n\n# Context\n\n- The following files are related to the Task.\n\n`;
 
         for (const tab of tabs) {
             if (tab.input instanceof vscode.TabInputText) {
@@ -129,56 +130,52 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         const workspacePath = workspaceFolders[0].uri.fsPath;
 
         try {
-            const diffs = diffContent.split('--- a/');
-            for (const diff of diffs) {
-                if (!diff.trim()) continue;
+            const parser = new GitDiffParser(workspacePath);
+            const result = await parser.applyDiff(diffContent);
 
-                const lines = diff.split('\n');
-                const filePathLine = lines[0];
-                const filePath = filePathLine.split(' +++ b/')[0].trim();
-                const fullPath = path.join(workspacePath, filePath);
+            if (result.success) {
+                vscode.window.showInformationMessage(`✨ Pastr: ${result.message}`);
 
-                if (!fs.existsSync(fullPath)) {
-                    vscode.window.showErrorMessage(`✨ Pastr: File not found: ${fullPath}`);
-                    continue;
-                }
+                // If there were partial errors, show them as warnings
+                if (result.errors.length > 0) {
+                    const choice = await vscode.window.showWarningMessage(
+                        `✨ Pastr: Changes applied with ${result.errors.length} warning(s). View details?`,
+                        'View Details',
+                        'Dismiss'
+                    );
 
-                let fileContent = fs.readFileSync(fullPath, 'utf-8');
-                let fileLines = fileContent.split('\n');
-
-                const hunks = diff.split('@@');
-                hunks.shift(); 
-
-                let lineOffset = 0;
-
-                for (let i = 0; i < hunks.length; i += 2) {
-                    const hunkHeader = hunks[i];
-                    const hunkBody = hunks[i + 1];
-
-                    const match = hunkHeader.match(/ -(\d+),?(\d*) \+(\d+),?(\d*) /);
-                    if (!match) continue;
-
-                    let startLine = parseInt(match[1], 10) - 1;
-                    const hunkLines = hunkBody.split('\n').slice(1, -1);
-
-                    let localOffset = 0;
-                    for (const line of hunkLines) {
-                        if (line.startsWith('-')) {
-                            fileLines.splice(startLine + lineOffset + localOffset, 1);
-                        } else if (line.startsWith('+')) {
-                            fileLines.splice(startLine + lineOffset + localOffset, 0, line.substring(1));
-                            localOffset++;
-                        } else {
-                            startLine++;
-                        }
+                    if (choice === 'View Details') {
+                        const errorDetails = result.errors.join('\n• ');
+                        vscode.window.showInformationMessage(`✨ Pastr: Warning details:\n• ${errorDetails}`);
                     }
-                    lineOffset += localOffset - hunkLines.filter(l => l.startsWith('-')).length;
                 }
-                fs.writeFileSync(fullPath, fileLines.join('\n'));
+            } else {
+                // Show main error message
+                const choice = await vscode.window.showErrorMessage(
+                    `✨ Pastr: ${result.message}`,
+                    'View Details',
+                    'Retry',
+                    'Dismiss'
+                );
+
+                if (choice === 'View Details' && result.errors.length > 0) {
+                    const errorDetails = result.errors.join('\n• ');
+                    vscode.window.showErrorMessage(`✨ Pastr: Error details:\n• ${errorDetails}`);
+                } else if (choice === 'Retry') {
+                    // Allow user to retry with the same diff
+                    await this.apply(diffContent);
+                }
             }
-            vscode.window.showInformationMessage('✨ Pastr: Changes applied successfully!');
         } catch (error: any) {
-            vscode.window.showErrorMessage(`✨ Pastr: Error applying changes: ${error.message}`);
+            const choice = await vscode.window.showErrorMessage(
+                `✨ Pastr: Unexpected error applying changes: ${error.message}`,
+                'Report Issue',
+                'Dismiss'
+            );
+
+            if (choice === 'Report Issue') {
+                vscode.env.openExternal(vscode.Uri.parse('https://github.com/your-repo/issues/new'));
+            }
         }
     }
 

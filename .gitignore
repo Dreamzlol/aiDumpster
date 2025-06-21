@@ -1,3 +1,5 @@
 vsc-extension-quickstart.md
 node_modules
 out
+.vscode-test
+package-lock.json
