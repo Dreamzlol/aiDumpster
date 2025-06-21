@@ -1,17 +1,31 @@
 const vscode = acquireVsCodeApi();
 
-document.getElementById('create-codebase').addEventListener('click', () => {
+document.getElementById('btn-generate').addEventListener('click', () => {
     const prompt = document.getElementById('prompt').value;
+    if (!prompt) {
+        vscode.postMessage({
+            command: 'showError',
+            message: '✨ Pastr: Please enter a task description.'
+        });
+        return;
+    }
     vscode.postMessage({
-        command: 'createCodebase',
+        command: 'generate',
         prompt: prompt
     });
 });
 
-document.getElementById('apply-changes').addEventListener('click', () => {
+document.getElementById('btn-apply').addEventListener('click', () => {
     const diff = document.getElementById('diff-input').value;
+    if (!diff) {
+        vscode.postMessage({
+            command: 'showError',
+            message: '✨ Pastr: Please paste the response to apply.'
+        });
+        return;
+    }
     vscode.postMessage({
-        command: 'applyGitDiff',
+        command: 'apply',
         diff: diff
     });
 });

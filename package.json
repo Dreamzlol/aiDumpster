@@ -1,6 +1,6 @@
 {
-  "name": "aidumpster",
-  "displayName": "aidumpster",
+  "name": "pastr",
+  "displayName": "pastr",
   "description": "PLACEHOLDER",
   "version": "0.0.1",
   "engines": {
@@ -10,32 +10,32 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:aidumpster.showUI"
+    "onCommand:pastr.showUI"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "codebase-ai-view-container",
-          "title": "Codebase AI",
-          "icon": "media/icon.svg"
+          "id": "pastr-view-container",
+          "title": "Pastr",
+          "icon": "media/pastr.svg"
         }
       ]
     },
     "views": {
-      "codebase-ai-view-container": [
+      "pastr-view-container": [
         {
-          "id": "codebase-ai-view",
-          "name": "Codebase AI",
+          "id": "pastr-view",
+          "name": "Pastr",
           "type": "webview"
         }
       ]
     },
     "commands": [
       {
-        "command": "aidumpster.showUI",
-        "title": "Open Codebase AI"
+        "command": "pastr.showUI",
+        "title": "Open Pastr"
       }
     ]
   },
