@@ -5,13 +5,13 @@ document.getElementById('btn-generate').addEventListener('click', () => {
     if (!prompt) {
         vscode.postMessage({
             command: 'showError',
-            message: '✨ Pastr: Please enter a task description.'
+            payload: { message: '✨ Pastr: Please enter a task description.' }
         });
         return;
     }
     vscode.postMessage({
         command: 'generate',
-        prompt: prompt
+        payload: { prompt: prompt }
     });
 });
 
@@ -20,12 +20,12 @@ document.getElementById('btn-apply').addEventListener('click', () => {
     if (!diff) {
         vscode.postMessage({
             command: 'showError',
-            message: '✨ Pastr: Please paste the response to apply.'
+            payload: { message: '✨ Pastr: Please paste the response to apply.' }
         });
         return;
     }
     vscode.postMessage({
         command: 'apply',
-        diff: diff
+        payload: { diff: diff }
     });
 });
