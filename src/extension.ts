@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { GitDiffParser } from './gitDiffParser';
+import { CodebaseExporter } from './codebaseExporter';
 
 // --- Constants ---
 const PASTR_VIEW_TYPE = 'pastr-view';
@@ -15,6 +16,17 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerWebviewViewProvider(PASTR_VIEW_TYPE, provider),
         vscode.commands.registerCommand('pastr.showUI', () => {
             vscode.commands.executeCommand(`workbench.view.extension.${PASTR_VIEW_TYPE}`);
+        }),
+
+        // Codebase Exporter Commands
+        vscode.commands.registerCommand('codebaseExporter.export', async () => {
+            await handleCodebaseExport(false);
+        }),
+        vscode.commands.registerCommand('codebaseExporter.exportWithPreview', async () => {
+            await handleCodebaseExport(true);
+        }),
+        vscode.commands.registerCommand('codebaseExporter.configure', async () => {
+            await CodebaseExporter.openConfiguration();
         })
     );
 }
@@ -60,7 +72,9 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
 
     private async generateContext(prompt: string) {
         const workspacePath = this.getWorkspacePath();
-        if (!workspacePath) return;
+        if (!workspacePath) {
+            return;
+        }
 
         const openTabs = this.getOpenEditorTabs();
         if (openTabs.length === 0) {
@@ -88,7 +102,9 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         }
 
         const workspacePath = this.getWorkspacePath();
-        if (!workspacePath) return;
+        if (!workspacePath) {
+            return;
+        }
 
         try {
             const parser = new GitDiffParser(workspacePath);
@@ -205,6 +221,52 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         html = html.replace(/{{applyIconUri}}/g, toUri('apply-icon.svg').toString());
 
         return html;
+    }
+}
+
+// --- Codebase Export Handler ---
+async function handleCodebaseExport(showPreview: boolean): Promise<void> {
+    // Validate workspace
+    const validation = CodebaseExporter.validateWorkspace();
+    if (!validation.valid) {
+        vscode.window.showErrorMessage(`Codebase Export: ${validation.message}`);
+        return;
+    }
+
+    const workspacePath = CodebaseExporter.getWorkspacePath()!;
+    const exporter = new CodebaseExporter(workspacePath);
+
+    try {
+        const result = await exporter.export({ showPreview });
+
+        if (result.success) {
+            if (result.stats) {
+                const statsMessage = `Exported ${result.stats.includedFiles} files (${result.stats.excludedFiles} excluded from ${result.stats.totalFiles} total)`;
+
+                if (result.filePath) {
+                    const choice = await vscode.window.showInformationMessage(
+                        `${result.message}\n${statsMessage}`,
+                        'Open File',
+                        'Show in Explorer'
+                    );
+
+                    if (choice === 'Open File') {
+                        const doc = await vscode.workspace.openTextDocument(result.filePath);
+                        await vscode.window.showTextDocument(doc);
+                    } else if (choice === 'Show in Explorer') {
+                        vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(result.filePath));
+                    }
+                } else {
+                    vscode.window.showInformationMessage(`${result.message}\n${statsMessage}`);
+                }
+            } else {
+                vscode.window.showInformationMessage(result.message);
+            }
+        } else {
+            vscode.window.showErrorMessage(`Codebase Export: ${result.message}`);
+        }
+    } catch (error: any) {
+        vscode.window.showErrorMessage(`Codebase Export failed: ${error.message}`);
     }
 }
 

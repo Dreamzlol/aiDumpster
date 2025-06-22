@@ -10,7 +10,10 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:pastr.showUI"
+    "onCommand:pastr.showUI",
+    "onCommand:codebaseExporter.export",
+    "onCommand:codebaseExporter.exportWithPreview",
+    "onCommand:codebaseExporter.configure"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -36,8 +39,69 @@
       {
         "command": "pastr.showUI",
         "title": "Open Pastr"
+      },
+      {
+        "command": "codebaseExporter.export",
+        "title": "Export Codebase to Markdown",
+        "category": "Codebase Exporter"
+      },
+      {
+        "command": "codebaseExporter.exportWithPreview",
+        "title": "Export Codebase to Markdown (with Preview)",
+        "category": "Codebase Exporter"
+      },
+      {
+        "command": "codebaseExporter.configure",
+        "title": "Configure Codebase Export Settings",
+        "category": "Codebase Exporter"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Codebase Exporter",
+      "properties": {
+        "codebaseExporter.defaultExportPath": {
+          "type": "string",
+          "default": "",
+          "description": "Default path for exporting codebase markdown files. Leave empty to use workspace root."
+        },
+        "codebaseExporter.respectGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to respect .gitignore rules when exporting codebase."
+        },
+        "codebaseExporter.includePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["**/*.{js,ts,jsx,tsx,py,java,cpp,c,h,cs,php,rb,go,rs,swift,kt,scala,clj,hs,ml,fs,vb,sql,html,css,scss,sass,less,xml,json,yaml,yml,md,txt}"],
+          "description": "Glob patterns for files to include in the export."
+        },
+        "codebaseExporter.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["**/node_modules/**", "**/.git/**", "**/build/**", "**/dist/**", "**/out/**", "**/.vscode/**", "**/.idea/**", "**/target/**", "**/bin/**", "**/obj/**"],
+          "description": "Glob patterns for files and directories to exclude from the export."
+        },
+        "codebaseExporter.maxFileSize": {
+          "type": "number",
+          "default": 1048576,
+          "description": "Maximum file size in bytes to include in export (default: 1MB)."
+        },
+        "codebaseExporter.includeTableOfContents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to include a table of contents in the exported markdown."
+        },
+        "codebaseExporter.fileNameTemplate": {
+          "type": "string",
+          "default": "codebase-export-{timestamp}",
+          "description": "Template for the exported file name. Use {timestamp} for current timestamp, {workspace} for workspace name."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -59,6 +123,8 @@
     "typescript": "^5.8.2"
   },
   "dependencies": {
+    "ignore": "^7.0.5",
+    "is-binary-path": "^3.0.0",
     "parse-git-diff": "^0.0.19"
   }
 }
