@@ -153,12 +153,16 @@ export function validateSearchReplaceBlock(block: SearchReplaceBlock): { valid: 
     // Validate file path
     if (!block.filePath || block.filePath.trim() === '') {
         errors.push('File path is empty or missing');
+    } else {
+        // Check for invalid characters in file path
+        if (block.filePath.includes('..')) {
+            errors.push('File path cannot contain ".." for security reasons');
+        }
+        if (path.isAbsolute(block.filePath)) {
+            errors.push('File path must be relative to the workspace, not absolute');
+        }
     }
 
-    // Check for invalid characters in file path
-    if (block.filePath.includes('..') || path.isAbsolute(block.filePath)) {
-        errors.push('File path contains invalid characters or is absolute');
-    }
 
     // For existing files, search content cannot be empty unless it's intentionally a new file
     if (!block.isNewFile && block.searchContent.trim() === '') {
@@ -167,7 +171,7 @@ export function validateSearchReplaceBlock(block: SearchReplaceBlock): { valid: 
 
     // Language should be specified
     if (!block.language || block.language.trim() === '') {
-        errors.push('Programming language not specified in fenced block');
+        errors.push('Programming language not specified in fenced block (e.g., ```typescript)');
     }
 
     return {

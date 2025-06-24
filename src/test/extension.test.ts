@@ -3,301 +3,350 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { parseSearchReplaceBlocks } from '../lib/parser';
+import { parseSearchReplaceBlocks, validateSearchReplaceBlock } from '../lib/parser';
 import { applySearchReplaceBlocks } from '../lib/applicator';
+import { generateFileTree, getNonce } from '../lib/utils';
+import type { SearchReplaceBlock } from '../lib/types';
 
-suite('Extension Test Suite', () => {
-    vscode.window.showInformationMessage('Start all tests.');
-
-    test('Sample test', () => {
-        assert.strictEqual(-1, [1, 2, 3].indexOf(5));
-        assert.strictEqual(-1, [1, 2, 3].indexOf(0));
-    });
-});
-
-suite('SEARCH/REPLACE Block Test Suite', () => {
+suite('Pastr Extension Test Suite', () => {
     let tempDir: string;
 
-    setup(() => {
-        // Create a temporary directory for testing
+	suiteSetup(() => {
         tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pastr-test-'));
     });
 
-    teardown(() => {
-        // Clean up temporary directory
+	suiteTeardown(() => {
         if (fs.existsSync(tempDir)) {
             fs.rmSync(tempDir, { recursive: true, force: true });
         }
     });
 
-	test('Should parse valid SEARCH/REPLACE blocks (legacy format with path inside)', () => {
-        const validContent = `\`\`\`python
-test.py
-<<<<<<< SEARCH
-def old_function():
-    return "old"
-=======
-def new_function():
-    return "new"
->>>>>>> REPLACE
-\`\`\``;
+	suite('Parser (parser.ts)', () => {
+		test('Should return empty array for null, undefined, or empty content', () => {
+			assert.deepStrictEqual(parseSearchReplaceBlocks(null as any), []);
+			assert.deepStrictEqual(parseSearchReplaceBlocks(undefined as any), []);
+			assert.deepStrictEqual(parseSearchReplaceBlocks(''), []);
+		});
 
-		const blocks = parseSearchReplaceBlocks(validContent);
-        assert.strictEqual(blocks.length, 1);
-        assert.strictEqual(blocks[0].language, 'python');
-        assert.strictEqual(blocks[0].filePath, 'test.py');
-        assert.strictEqual(blocks[0].searchContent, 'def old_function():\n    return "old"');
-        assert.strictEqual(blocks[0].replaceContent, 'def new_function():\n    return "new"');
-        assert.strictEqual(blocks[0].isNewFile, false);
-    });
-
-	test('Should parse valid SEARCH/REPLACE blocks with path outside', () => {
-		const content = `
-some intro text
-src/test.py
+		test('Should parse a single valid block with path outside', () => {
+			const content = `
+file/path/to/test.py
 \`\`\`python
 <<<<<<< SEARCH
-this is a test
+print("hello")
 =======
-this is the replacement
+print("goodbye")
 >>>>>>> REPLACE
 \`\`\`
-		`;
-		const blocks = parseSearchReplaceBlocks(content);
-		assert.strictEqual(blocks.length, 1, "Should have parsed one block");
-		assert.strictEqual(blocks[0].filePath, 'src/test.py');
-		assert.strictEqual(blocks[0].language, 'python');
-		assert.strictEqual(blocks[0].searchContent.trim(), 'this is a test');
-	});
+			`;
+			const blocks = parseSearchReplaceBlocks(content);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].filePath, 'file/path/to/test.py');
+			assert.strictEqual(blocks[0].language, 'python');
+			assert.strictEqual(blocks[0].searchContent, 'print("hello")');
+			assert.strictEqual(blocks[0].replaceContent, 'print("goodbye")');
+		});
 
-    test('Should parse valid SEARCH/REPLACE blocks with XML wrapper', () => {
-        const validContent = `<search_replace_blocks>
-test.py
-\`\`\`python
+		test('Should parse a new file block', () => {
+			const content = `
+new_file.js
+\`\`\`javascript
 <<<<<<< SEARCH
-def old_function():
-    return "old"
 =======
-def new_function():
-    return "new"
+console.log("new file created");
+>>>>>>> REPLACE
+\`\`\`
+			`;
+			const blocks = parseSearchReplaceBlocks(content);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].isNewFile, true);
+			assert.strictEqual(blocks[0].searchContent, '');
+			assert.strictEqual(blocks[0].replaceContent, 'console.log("new file created");');
+		});
+		
+		test('Should parse multiple blocks correctly', () => {
+			const content = `
+file1.ts
+\`\`\`typescript
+<<<<<<< SEARCH
+const a = 1;
+=======
+const a = 2;
+>>>>>>> REPLACE
+\`\`\`
+
+Some other text.
+
+file2.ts
+\`\`\`typescript
+<<<<<<< SEARCH
+const b = 3;
+=======
+const b = 4;
+>>>>>>> REPLACE
+\`\`\`
+			`;
+			const blocks = parseSearchReplaceBlocks(content);
+			assert.strictEqual(blocks.length, 2);
+			assert.strictEqual(blocks[0].filePath, 'file1.ts');
+			assert.strictEqual(blocks[1].filePath, 'file2.ts');
+		});
+		
+		test('Should handle blocks with XML wrapper', () => {
+			const content = `<search_replace_blocks>
+path/to/file.html
+\`\`\`html
+<<<<<<< SEARCH
+<h1>Old</h1>
+=======
+<h1>New</h1>
 >>>>>>> REPLACE
 \`\`\`
 </search_replace_blocks>`;
+			const blocks = parseSearchReplaceBlocks(content);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].filePath, 'path/to/file.html');
+		});
 
-		const blocks = parseSearchReplaceBlocks(validContent);
-        assert.strictEqual(blocks.length, 1);
-        assert.strictEqual(blocks[0].language, 'python');
-        assert.strictEqual(blocks[0].filePath, 'test.py');
-        assert.strictEqual(blocks[0].searchContent, 'def old_function():\n    return "old"');
-        assert.strictEqual(blocks[0].replaceContent, 'def new_function():\n    return "new"');
-        assert.strictEqual(blocks[0].isNewFile, false);
-    });
-
-    test('Should handle empty or invalid content', async () => {
-		const result1 = await applySearchReplaceBlocks('', tempDir);
-        assert.strictEqual(result1.success, false);
-        assert.strictEqual(result1.message, 'No valid SEARCH/REPLACE blocks found');
-
-		const result2 = await applySearchReplaceBlocks('invalid content', tempDir);
-        assert.strictEqual(result2.success, false);
-        assert.strictEqual(result2.message, 'No valid SEARCH/REPLACE blocks found');
-    });
-
-	test('Should parse multiple SEARCH/REPLACE blocks with paths outside', () => {
-		const multiBlockContent = `
-file1.py
-\`\`\`python
+		test('Should ignore malformed blocks', () => {
+			const content = `
+file.txt
+\`\`\`text
 <<<<<<< SEARCH
-def old_func1():
-    pass
-=======
-def new_func1():
-    pass
->>>>>>> REPLACE
-\`\`\`
+missing divider and end
+`;
+			const blocks = parseSearchReplaceBlocks(content);
+			assert.strictEqual(blocks.length, 0);
+		});
 
-Some text in between.
+		suite('validateSearchReplaceBlock', () => {
+			const baseBlock: SearchReplaceBlock = {
+				filePath: 'src/main.ts',
+				language: 'typescript',
+				searchContent: 'search',
+				replaceContent: 'replace',
+				isNewFile: false,
+			};
 
-file2.js
+			test('Should pass a valid block', () => {
+				const { valid, errors } = validateSearchReplaceBlock(baseBlock);
+				assert.strictEqual(valid, true);
+				assert.strictEqual(errors.length, 0);
+			});
+
+			test('Should fail with missing file path', () => {
+				const { valid } = validateSearchReplaceBlock({ ...baseBlock, filePath: '' });
+				assert.strictEqual(valid, false);
+			});
+
+			test('Should fail with absolute file path', () => {
+				const { valid, errors } = validateSearchReplaceBlock({ ...baseBlock, filePath: '/abs/path' });
+				assert.strictEqual(valid, false);
+				assert.ok(errors.some(e => e.includes('absolute')));
+			});
+
+			test('Should fail with ".." in file path', () => {
+				const { valid, errors } = validateSearchReplaceBlock({ ...baseBlock, filePath: '../src/main.ts' });
+				assert.strictEqual(valid, false);
+				assert.ok(errors.some(e => e.includes('..')));
+			});
+			
+			test('Should fail with empty search content for existing file', () => {
+				const { valid } = validateSearchReplaceBlock({ ...baseBlock, searchContent: '  ', isNewFile: false });
+				assert.strictEqual(valid, false);
+			});
+
+			test('Should pass with empty search content for new file', () => {
+				const { valid } = validateSearchReplaceBlock({ ...baseBlock, searchContent: '', isNewFile: true });
+				assert.strictEqual(valid, true);
+			});
+
+			test('Should fail with missing language', () => {
+				const { valid } = validateSearchReplaceBlock({ ...baseBlock, language: '' });
+				assert.strictEqual(valid, false);
+			});
+		});
+    });
+
+	suite('Applicator (applicator.ts)', () => {
+		let testWorkspace: string;
+		
+		setup(() => {
+			testWorkspace = fs.mkdtempSync(path.join(tempDir, 'workspace-'));
+		});
+
+		teardown(() => {
+			if (fs.existsSync(testWorkspace)) {
+				fs.rmSync(testWorkspace, { recursive: true, force: true });
+			}
+		});
+		
+		test('Should create a new file', async () => {
+			const content = `
+new/app.js
 \`\`\`javascript
 <<<<<<< SEARCH
-function oldFunc2() {}
 =======
-function newFunc2() {}
->>>>>>> REPLACE
-\`\`\``;
-
-		const blocks = parseSearchReplaceBlocks(multiBlockContent);
-        assert.strictEqual(blocks.length, 2);
-        assert.strictEqual(blocks[0].filePath, 'file1.py');
-        assert.strictEqual(blocks[1].filePath, 'file2.js');
-    });
-
-	test('Should correctly parse the user-provided failing case', () => {
-		const failingContent = `<search_replace_blocks>
-src/lib/components/ContentSection.svelte
-\`\`\`svelte
-<<<<<<< SEARCH
-=======
-<script lang="ts">
-	import type { Snippet } from 'svelte'
-
-	type Props = {
-		title: string
-		children: Snippet
-		testId?: string
-		titleTestId?: string
-		class?: string
-	}
-
-	let {
-		children,
-		title,
-		testId,
-		titleTestId,
-		class: className
-	}: Props = $props()
-</script>
-
-<section
-	class="mx-auto flex max-w-screen-sm flex-col items-start gap-18 {className || ''}"
-	data-testid={testId}
->
-	<h2
-		class="text-2xl font-normal text-white md:text-4xl"
-		data-testid={titleTestId}
-	>
-		{title}
-	</h2>
-	{@render children()}
-</section>
+console.log("hello world");
 >>>>>>> REPLACE
 \`\`\`
-src/lib/components/about/About.svelte
-\`\`\`svelte
+			`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
+			assert.strictEqual(result.success, true);
+			assert.strictEqual(result.filesProcessed, 1);
+			const newFilePath = path.join(testWorkspace, 'new', 'app.js');
+			assert.ok(fs.existsSync(newFilePath));
+			assert.strictEqual(fs.readFileSync(newFilePath, 'utf8'), 'console.log("hello world");');
+		});
+
+		test('Should modify an existing file', async () => {
+			const filePath = path.join(testWorkspace, 'test.txt');
+			const originalContent = 'Line 1\nLine 2 is the one to be replaced.\nLine 3';
+			fs.writeFileSync(filePath, originalContent, 'utf8');
+
+			const content = `
+test.txt
+\`\`\`text
 <<<<<<< SEARCH
-<script lang="ts">
-	import type { AboutItem } from '$lib/types/about'
-
-	interface Props {
-		data: AboutItem[]
-	}
-
-	let { data }: Props = $props()
-</script>
+Line 2 is the one to be replaced.
 =======
-<script lang="ts">
-	import type { AboutItem } from '$lib/types/about'
-
-	interface Props {
-		data: AboutItem
-	}
-
-	let { data }: Props = $props()
-</script>
+Line 2 has been replaced.
 >>>>>>> REPLACE
 \`\`\`
-</search_replace_blocks>`;
+`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
 
-		const blocks = parseSearchReplaceBlocks(failingContent);
-		assert.strictEqual(blocks.length, 2, "Should parse two blocks");
-		assert.strictEqual(blocks[0].filePath, "src/lib/components/ContentSection.svelte");
-		assert.strictEqual(blocks[0].isNewFile, true);
-		assert.strictEqual(blocks[0].language, "svelte");
-		assert.ok(blocks[0].replaceContent.includes('<script lang="ts">'));
+			assert.strictEqual(result.success, true, `Apply failed: ${result.errors.join('; ')}`);
+			assert.strictEqual(result.blocksProcessed, 1);
 
-		assert.strictEqual(blocks[1].filePath, "src/lib/components/about/About.svelte");
-		assert.strictEqual(blocks[1].isNewFile, false);
-		assert.ok(blocks[1].searchContent.includes('data: AboutItem[]'));
-		assert.ok(blocks[1].replaceContent.includes('data: AboutItem'));
-    });
-
-	test('Should handle file modification with exact match', async () => {
-        const filePath = path.join(tempDir, 'existing_file.py');
-		const originalContent = 'def old_function():\n    return "old value"\n\nprint("test")';
-        fs.writeFileSync(filePath, originalContent, 'utf8');
-
-		const modifyContent = `existing_file.py
-\`\`\`python
-<<<<<<< SEARCH
-def old_function():
-    return "old value"
-=======
-def new_function():
-    return "new value"
->>>>>>> REPLACE
-\`\`\``;
-
-		const result = await applySearchReplaceBlocks(modifyContent, tempDir);
-        assert.strictEqual(result.success, true);
-        assert.strictEqual(result.filesProcessed, 1);
-        assert.strictEqual(result.blocksProcessed, 1);
-
-        const newContent = fs.readFileSync(filePath, 'utf8');
-        assert.strictEqual(newContent.includes('def new_function():'), true);
-        assert.strictEqual(newContent.includes('return "new value"'), true);
-		assert.strictEqual(newContent.includes('print("test")'), true);
-    });
-
-	test('Should fail to apply but give whitespace warning', async () => {
-		const filePath = path.join(tempDir, 'file.js');
-		// File has 4-space indent
-		fs.writeFileSync(filePath, 'function test() {\n    console.log("hello");\n}', 'utf8');
-
-		// Search block has 2-space indent and tabs
-		const modifyContent = `file.js
-\`\`\`javascript
-<<<<<<< SEARCH
-function test() {
-	console.log("hello");
-}
-=======
-function test() {
-	console.log("goodbye");
-}
->>>>>>> REPLACE
-\`\`\``;
-
-		const result = await applySearchReplaceBlocks(modifyContent, tempDir);
-		assert.strictEqual(result.success, false, "Apply should fail");
-		assert.strictEqual(result.errors.length, 1, "Should have one error");
-		assert.strictEqual(result.warnings.length, 1, "Should have one warning");
-		assert.ok(result.warnings[0].includes("whitespace"));
-	});
-
-	test('Should handle file creation', async () => {
-		const newFileContent = `new_file.py
-\`\`\`python
-<<<<<<< SEARCH
-=======
-def hello():
-	print("Hello, World!")
->>>>>>> REPLACE
-\`\`\``;
-
-		const result = await applySearchReplaceBlocks(newFileContent, tempDir);
-		assert.strictEqual(result.success, true);
-		const filePath = path.join(tempDir, 'new_file.py');
-		assert.strictEqual(fs.existsSync(filePath), true);
-		const content = fs.readFileSync(filePath, 'utf8');
-		assert.ok(content.includes('def hello():'));
-    });
-
-    test('Should handle file already exists error for new files', async () => {
-        const filePath = path.join(tempDir, 'existing.py');
-        fs.writeFileSync(filePath, 'existing content', 'utf8');
-
-		const duplicateContent = `existing.py
-\`\`\`python
+			const newFileContent = fs.readFileSync(filePath, 'utf8');
+			const expectedNewContent = 'Line 1\nLine 2 has been replaced.\nLine 3';
+			assert.strictEqual(newFileContent, expectedNewContent);
+		});
+		
+		test('Should fail to create a file that already exists', async () => {
+			const filePath = path.join(testWorkspace, 'existing.txt');
+			fs.writeFileSync(filePath, 'original');
+			const content = `
+existing.txt
+\`\`\`text
 <<<<<<< SEARCH
 =======
 new content
 >>>>>>> REPLACE
-\`\`\``;
+\`\`\`
+			`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
+			assert.strictEqual(result.success, false);
+			assert.strictEqual(result.errors.length, 1);
+			assert.ok(result.errors[0].includes('File already exists'));
+		});
+		
+		test('Should fail if search content not found', async () => {
+			const filePath = path.join(testWorkspace, 'file.txt');
+			fs.writeFileSync(filePath, 'hello world');
+			const content = `
+file.txt
+\`\`\`text
+<<<<<<< SEARCH
+goodbye world
+=======
+hello universe
+>>>>>>> REPLACE
+\`\`\`
+			`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
+			assert.strictEqual(result.success, false);
+			assert.strictEqual(result.errors.length, 1);
+			assert.ok(result.errors[0].includes('did not exactly match'));
+		});
+		
+		test('Should return a warning for whitespace differences', async () => {
+			const filePath = path.join(testWorkspace, 'file.js');
+			// File has 2-space indentation
+			fs.writeFileSync(filePath, 'if (true) {\n  console.log(1);\n}', 'utf8');
+			const content = `
+file.js
+\`\`\`javascript
+<<<<<<< SEARCH
+if (true) {
+	console.log(1);
+}
+=======
+if (true) {
+	console.log(2);
+}
+>>>>>>> REPLACE
+\`\`\`
+			`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
+			assert.strictEqual(result.success, false);
+			assert.strictEqual(result.errors.length, 1);
+			assert.strictEqual(result.warnings.length, 1);
+			assert.ok(result.warnings[0].includes('whitespace'));
+		});
+		
+		test('Should handle partial success (one block fails, one succeeds)', async () => {
+			const filePath1 = path.join(testWorkspace, 'file1.txt');
+			fs.writeFileSync(filePath1, 'content1');
+			const content = `
+file1.txt
+\`\`\`text
+<<<<<<< SEARCH
+content1
+=======
+content2
+>>>>>>> REPLACE
+\`\`\`
 
-		const result = await applySearchReplaceBlocks(duplicateContent, tempDir);
-        assert.strictEqual(result.success, false);
-		assert.strictEqual(result.errors.length, 1);
-		assert.ok(result.errors[0].includes('File already exists'));
+file2.txt
+\`\`\`text
+<<<<<<< SEARCH
+does not exist
+=======
+wont be applied
+>>>>>>> REPLACE
+\`\`\`
+			`;
+			const result = await applySearchReplaceBlocks(content, testWorkspace);
+			assert.strictEqual(result.success, true);
+			assert.strictEqual(result.blocksProcessed, 1);
+			assert.strictEqual(result.filesProcessed, 1);
+			assert.strictEqual(result.errors.length, 1);
+			assert.ok(result.errors[0].includes('file2.txt'));
+		});
+	});
+
+	suite('Utils (utils.ts)', () => {
+		test('getNonce should return a 32-character string', () => {
+			const nonce = getNonce();
+			assert.strictEqual(typeof nonce, 'string');
+			assert.strictEqual(nonce.length, 32);
+		});
+
+		test('generateFileTree should create a correct tree structure', () => {
+			const files = [
+				'src/main.ts',
+				'src/lib/parser.ts',
+				'package.json'
+			];
+			const rootName = 'my-project';
+			const expected =
+`my-project
+├── src
+│   ├── main.ts
+│   └── lib
+│       └── parser.ts
+└── package.json
+`;
+			const tree = generateFileTree(files, rootName).replace(/(\r\n|\r)/g, '\n');
+			// A bit of normalization for OS differences
+			assert.strictEqual(tree, expected.replace(/(\r\n|\r)/g, '\n'));
+		});
+
+		test('generateFileTree should handle empty file list', () => {
+			const tree = generateFileTree([], 'empty-project');
+			assert.strictEqual(tree, 'empty-project\n');
+		});
     });
 });

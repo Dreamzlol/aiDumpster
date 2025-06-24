@@ -125,9 +125,9 @@ export class PastrViewProvider implements vscode.WebviewViewProvider {
             if (result.warnings.length > 0) {
                 const choice = await vscode.window.showWarningMessage(
                     `${PAST_EMOJI} Changes applied with ${result.warnings.length} warning(s).`,
-                    'View Details'
+                    'View Warnings'
                 );
-                if (choice === 'View Details') {
+                if (choice === 'View Warnings') {
                     vscode.window.showInformationMessage(`${PAST_EMOJI} Warning details:\n• ${result.warnings.join('\n• ')}`);
                 }
             }
@@ -135,23 +135,20 @@ export class PastrViewProvider implements vscode.WebviewViewProvider {
             if (result.errors.length > 0) {
                 const choice = await vscode.window.showWarningMessage(
                     `${PAST_EMOJI} Some blocks failed to apply (${result.errors.length} error(s)).`,
-                    'View Details'
+                    'View Errors'
                 );
-                if (choice === 'View Details') {
+                if (choice === 'View Errors') {
                     vscode.window.showErrorMessage(`${PAST_EMOJI} Error details:\n• ${result.errors.join('\n• ')}`);
                 }
             }
         } else {
             const choices = ['View Details', 'Retry'];
-            let message = `${PAST_EMOJI} ${result.message}`;
-            if (result.warnings.length > 0) {
-                message += ` (${result.warnings[0]})`;
-            }
+            const choice = await vscode.window.showErrorMessage(`${PAST_EMOJI} ${result.message}`, ...choices);
 
-            const choice = await vscode.window.showErrorMessage(message, ...choices);
-
-            if (choice === 'View Details' && result.errors.length > 0) {
-                vscode.window.showErrorMessage(`${PAST_EMOJI} Error details:\n• ${result.errors.join('\n• ')}`);
+            if (choice === 'View Details' && (result.errors.length > 0 || result.warnings.length > 0)) {
+                const errorDetails = result.errors.length > 0 ? `Errors:\n• ${result.errors.join('\n• ')}` : '';
+                const warningDetails = result.warnings.length > 0 ? `Warnings:\n• ${result.warnings.join('\n• ')}` : '';
+                vscode.window.showErrorMessage(`${PAST_EMOJI} Operation failed. Details:\n${errorDetails}\n${warningDetails}`);
             } else if (choice === 'Retry') {
                 await this.applyChanges(originalContent);
             }

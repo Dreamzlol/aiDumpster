@@ -9,7 +9,7 @@ import { parseSearchReplaceBlocks, validateSearchReplaceBlock } from './parser';
  * @param {string} workspacePath The absolute path to the VS Code workspace.
  * @returns {Promise<ApplyResult>} A promise that resolves to an `ApplyResult` object.
  */
-export async function applySearchReplaceBlocks(content: string, workspacePath: string): Promise<ApplyResult> {
+export async function applySearchReplaceBlocks(content: string, workspacePath:string): Promise<ApplyResult> {
     const result: ApplyResult = {
         success: false,
         message: '',
@@ -24,8 +24,8 @@ export async function applySearchReplaceBlocks(content: string, workspacePath: s
         const blocks = parseSearchReplaceBlocks(content);
 
         if (blocks.length === 0) {
-            result.message = 'No valid SEARCH/REPLACE blocks found';
-            result.errors.push('No fenced code blocks with SEARCH/REPLACE format detected');
+            result.message = 'No valid SEARCH/REPLACE blocks found in the response.';
+            result.errors.push('Could not find any fenced code blocks with the SEARCH/REPLACE format.');
             return result;
         }
 
@@ -38,7 +38,7 @@ export async function applySearchReplaceBlocks(content: string, workspacePath: s
                 // Validate block format
                 const validation = validateSearchReplaceBlock(block);
                 if (!validation.valid) {
-                    result.errors.push(`Block ${block.lineNumber}: ${validation.errors.join(', ')}`);
+                    result.errors.push(`Block ${block.lineNumber} (${block.filePath}): Invalid format - ${validation.errors.join(', ')}`);
                     continue;
                 }
 
@@ -49,13 +49,14 @@ export async function applySearchReplaceBlocks(content: string, workspacePath: s
                     successfulBlocks++;
                     processedFiles.add(block.filePath);
                     if (blockResult.warnings.length > 0) {
-                        result.warnings.push(...blockResult.warnings);
+                        blockResult.warnings.forEach(w => result.warnings.push(`Block ${block.lineNumber} (${block.filePath}): ${w}`));
                     }
                 } else {
-                    result.errors.push(`Block ${block.lineNumber} (${block.filePath}): ${blockResult.message}`);
+                    const errorMessage = blockResult.errors.length > 0 ? blockResult.errors.join(' ') : blockResult.message;
+                    result.errors.push(`Block ${block.lineNumber} (${block.filePath}): ${errorMessage}`);
                     // Also collect warnings from failed blocks
                     if (blockResult.warnings.length > 0) {
-                        result.warnings.push(...blockResult.warnings);
+                        blockResult.warnings.forEach(w => result.warnings.push(`Block ${block.lineNumber} (${block.filePath}): ${w}`));
                     }
                 }
 
@@ -72,12 +73,16 @@ export async function applySearchReplaceBlocks(content: string, workspacePath: s
 
         if (result.success) {
             if (result.errors.length === 0) {
-                result.message = `Successfully applied ${successfulBlocks} block(s) to ${result.filesProcessed} file(s)`;
+                result.message = `Successfully applied ${successfulBlocks} block(s) to ${result.filesProcessed} file(s).`;
             } else {
-                result.message = `Applied ${successfulBlocks} block(s) to ${result.filesProcessed} file(s) with ${result.errors.length} error(s)`;
+                result.message = `Applied ${successfulBlocks} block(s) to ${result.filesProcessed} file(s), but ${result.errors.length} error(s) occurred.`;
             }
         } else {
-            result.message = `Failed to apply any blocks. ${result.errors.length} error(s) occurred`;
+            if (result.errors.length > 0) {
+                result.message = `Failed to apply any blocks. ${result.errors.length} error(s) occurred.`;
+            } else {
+                result.message = `Failed to apply any blocks. No valid blocks were processed.`;
+            }
         }
 
     } catch (error: any) {
@@ -152,7 +157,7 @@ async function createNewFile(filePath: string, content: string): Promise<void> {
 
     // Check if file already exists
     if (fs.existsSync(filePath)) {
-        throw new Error(`File already exists: ${path.basename(filePath)}`);
+        throw new Error(`File already exists`);
     }
 
     // Write the file
@@ -179,8 +184,8 @@ async function findAndReplaceInFile(filePath: string, searchContent: string, rep
 
     try {
         if (!fs.existsSync(filePath)) {
-            result.message = `File not found: ${filePath}`;
-            result.errors.push(`File does not exist: ${filePath}`);
+            result.message = `File not found`;
+            result.errors.push(`The specified file does not exist.`);
             return result;
         }
 
@@ -192,20 +197,18 @@ async function findAndReplaceInFile(filePath: string, searchContent: string, rep
             const currentTrimmed = currentContent.replace(/\s+/g, ' ').trim();
             const searchTrimmed = searchContent.replace(/\s+/g, ' ').trim();
 
+            result.message = `Search content not found`;
+            result.errors.push('The content in the SEARCH block did not exactly match any part of the file.');
+
             if (currentTrimmed.includes(searchTrimmed)) {
-                result.message = `Search content not found in file: ${path.basename(filePath)}`;
-                result.errors.push('Search content does not match any part of the file exactly');
-                result.warnings.push('A similar block was found, but whitespace (spaces, tabs, newlines) does not match. Please ensure the SEARCH block is an exact copy.');
-            } else {
-                result.message = `Search content not found in file: ${path.basename(filePath)}`;
-                result.errors.push('Search content does not match any part of the file');
+                result.warnings.push('A similar block of text was found, but it differs by whitespace (spaces, tabs, or newlines). The SEARCH block must be an exact match.');
             }
             return result;
         }
 
         fs.writeFileSync(filePath, newContent, 'utf8');
         result.success = true;
-        result.message = `Successfully modified: ${path.basename(filePath)}`;
+        result.message = `Successfully modified file`;
 
     } catch (error: any) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
