@@ -3,7 +3,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { PastrViewProvider, SearchReplaceBlock } from '../extension';
+import { parseSearchReplaceBlocks } from '../lib/parser';
+import { applySearchReplaceBlocks } from '../lib/applicator';
 
 suite('Extension Test Suite', () => {
     vscode.window.showInformationMessage('Start all tests.');
@@ -15,14 +16,11 @@ suite('Extension Test Suite', () => {
 });
 
 suite('SEARCH/REPLACE Block Test Suite', () => {
-	let provider: PastrViewProvider;
     let tempDir: string;
 
     setup(() => {
         // Create a temporary directory for testing
         tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pastr-test-'));
-		const mockExtensionUri = vscode.Uri.file(tempDir);
-		provider = new PastrViewProvider(mockExtensionUri);
     });
 
     teardown(() => {
@@ -44,7 +42,7 @@ def new_function():
 >>>>>>> REPLACE
 \`\`\``;
 
-		const blocks = provider.parseSearchReplaceBlocks(validContent);
+		const blocks = parseSearchReplaceBlocks(validContent);
         assert.strictEqual(blocks.length, 1);
         assert.strictEqual(blocks[0].language, 'python');
         assert.strictEqual(blocks[0].filePath, 'test.py');
@@ -65,7 +63,7 @@ this is the replacement
 >>>>>>> REPLACE
 \`\`\`
 		`;
-		const blocks = provider.parseSearchReplaceBlocks(content);
+		const blocks = parseSearchReplaceBlocks(content);
 		assert.strictEqual(blocks.length, 1, "Should have parsed one block");
 		assert.strictEqual(blocks[0].filePath, 'src/test.py');
 		assert.strictEqual(blocks[0].language, 'python');
@@ -86,7 +84,7 @@ def new_function():
 \`\`\`
 </search_replace_blocks>`;
 
-		const blocks = provider.parseSearchReplaceBlocks(validContent);
+		const blocks = parseSearchReplaceBlocks(validContent);
         assert.strictEqual(blocks.length, 1);
         assert.strictEqual(blocks[0].language, 'python');
         assert.strictEqual(blocks[0].filePath, 'test.py');
@@ -96,11 +94,11 @@ def new_function():
     });
 
     test('Should handle empty or invalid content', async () => {
-		const result1 = await provider.applySearchReplaceBlocks('', tempDir);
+		const result1 = await applySearchReplaceBlocks('', tempDir);
         assert.strictEqual(result1.success, false);
         assert.strictEqual(result1.message, 'No valid SEARCH/REPLACE blocks found');
 
-		const result2 = await provider.applySearchReplaceBlocks('invalid content', tempDir);
+		const result2 = await applySearchReplaceBlocks('invalid content', tempDir);
         assert.strictEqual(result2.success, false);
         assert.strictEqual(result2.message, 'No valid SEARCH/REPLACE blocks found');
     });
@@ -129,7 +127,7 @@ function newFunc2() {}
 >>>>>>> REPLACE
 \`\`\``;
 
-		const blocks = provider.parseSearchReplaceBlocks(multiBlockContent);
+		const blocks = parseSearchReplaceBlocks(multiBlockContent);
         assert.strictEqual(blocks.length, 2);
         assert.strictEqual(blocks[0].filePath, 'file1.py');
         assert.strictEqual(blocks[1].filePath, 'file2.js');
@@ -201,12 +199,12 @@ src/lib/components/about/About.svelte
 \`\`\`
 </search_replace_blocks>`;
 
-		const blocks = provider.parseSearchReplaceBlocks(failingContent);
+		const blocks = parseSearchReplaceBlocks(failingContent);
 		assert.strictEqual(blocks.length, 2, "Should parse two blocks");
 		assert.strictEqual(blocks[0].filePath, "src/lib/components/ContentSection.svelte");
 		assert.strictEqual(blocks[0].isNewFile, true);
 		assert.strictEqual(blocks[0].language, "svelte");
-		assert.ok(blocks[0].replaceContent.includes('ContentSection.svelte'));
+		assert.ok(blocks[0].replaceContent.includes('<script lang="ts">'));
 
 		assert.strictEqual(blocks[1].filePath, "src/lib/components/about/About.svelte");
 		assert.strictEqual(blocks[1].isNewFile, false);
@@ -230,7 +228,7 @@ def new_function():
 >>>>>>> REPLACE
 \`\`\``;
 
-		const result = await provider.applySearchReplaceBlocks(modifyContent, tempDir);
+		const result = await applySearchReplaceBlocks(modifyContent, tempDir);
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.filesProcessed, 1);
         assert.strictEqual(result.blocksProcessed, 1);
@@ -246,7 +244,7 @@ def new_function():
 		// File has 4-space indent
 		fs.writeFileSync(filePath, 'function test() {\n    console.log("hello");\n}', 'utf8');
 
-		// Search block has 2-space indent
+		// Search block has 2-space indent and tabs
 		const modifyContent = `file.js
 \`\`\`javascript
 <<<<<<< SEARCH
@@ -260,7 +258,7 @@ function test() {
 >>>>>>> REPLACE
 \`\`\``;
 
-		const result = await provider.applySearchReplaceBlocks(modifyContent, tempDir);
+		const result = await applySearchReplaceBlocks(modifyContent, tempDir);
 		assert.strictEqual(result.success, false, "Apply should fail");
 		assert.strictEqual(result.errors.length, 1, "Should have one error");
 		assert.strictEqual(result.warnings.length, 1, "Should have one warning");
@@ -277,7 +275,7 @@ def hello():
 >>>>>>> REPLACE
 \`\`\``;
 
-		const result = await provider.applySearchReplaceBlocks(newFileContent, tempDir);
+		const result = await applySearchReplaceBlocks(newFileContent, tempDir);
 		assert.strictEqual(result.success, true);
 		const filePath = path.join(tempDir, 'new_file.py');
 		assert.strictEqual(fs.existsSync(filePath), true);
@@ -297,7 +295,7 @@ new content
 >>>>>>> REPLACE
 \`\`\``;
 
-		const result = await provider.applySearchReplaceBlocks(duplicateContent, tempDir);
+		const result = await applySearchReplaceBlocks(duplicateContent, tempDir);
         assert.strictEqual(result.success, false);
 		assert.strictEqual(result.errors.length, 1);
 		assert.ok(result.errors[0].includes('File already exists'));
