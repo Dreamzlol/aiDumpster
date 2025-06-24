@@ -26,6 +26,172 @@ export interface ApplyResult {
     warnings: string[];
 }
 
+// --- Prompt Generation Sections ---
+
+const PROMPT_ROLE = `
+# Instructions
+
+## Role
+
+- Act as an **code editing assistant**: You can fulfill edit requests and chat with the user about code or other questions.
+
+## Output format
+
+**CRITICAL: Your response must ONLY contain the \`<search_replace_blocks>\` XML wrapper with SEARCH/REPLACE blocks inside. NO explanations, NO descriptions, NO additional text before or after the XML wrapper.**
+`;
+
+const PROMPT_RULES = `
+### SEARCH/REPLACE Block Rules
+
+Every *SEARCH/REPLACE block* must use this format:
+
+1. **The *FULL* file path alone on a line, verbatim.** No bold asterisks, no quotes around it, no escaping of characters, etc.
+2. **The opening fence and code language**, eg: \`\`\`python
+3. **The start of search block**: \`<<<<<<< SEARCH\`
+4. **A contiguous chunk of lines to search for in the existing source code**
+5. **The dividing line**: \`=======\`
+6. **The lines to replace into the source code**
+7. **The end of the replace block**: \`>>>>>>> REPLACE\`
+8. **The closing fence**: \`\`\`
+
+#### Critical Rules
+
+- **Your entire response must be ONLY: \`<search_replace_blocks>\` followed by the blocks, then \`</search_replace_blocks>\`. Nothing else.**
+- **NO explanations, NO descriptions, NO "Here are the changes", NO "I've analyzed", NO additional text.**
+- Use the *FULL* file path, as shown to you by the user.
+- Every *SEARCH* section must *EXACTLY MATCH* the existing file content, character for character, including all comments, docstrings, etc.
+- If the file contains code or other data wrapped/escaped in json/xml/quotes or other containers, you need to propose edits to the literal contents of the file, including the container markup.
+- *SEARCH/REPLACE* blocks will *only* replace the first match occurrence.
+- Include multiple unique *SEARCH/REPLACE* blocks if needed.
+- Include enough lines in each SEARCH section to uniquely match each set of lines that need to change.
+- Keep *SEARCH/REPLACE* blocks concise.
+- Break large *SEARCH/REPLACE* blocks into a series of smaller blocks that each change a small portion of the file.
+- Include just the changing lines, and a few surrounding lines if needed for uniqueness.
+- Do not include long runs of unchanging lines in *SEARCH/REPLACE* blocks.
+- Only create *SEARCH/REPLACE* blocks for files that the user has added to the chat!
+
+**To move code within a file**: Use 2 *SEARCH/REPLACE* blocks: 1 to delete it from its current location, 1 to insert it in the new location.
+
+**Pay attention to which filenames** the user wants you to edit, especially if they are asking you to create a new file.
+
+**If you want to put code in a new file**, use a *SEARCH/REPLACE block* with:
+- A new file path, including dir name if needed
+- An empty \`SEARCH\` section
+- The new file's contents in the \`REPLACE\` section
+`;
+
+const PROMPT_EXAMPLES = `
+## Examples
+
+### Example 1: Modifying Existing Code
+
+**User Request**: "Change get_factorial() to use math.factorial"
+
+**CORRECT Response Format** (NO explanations, ONLY the XML wrapper with blocks):
+
+<search_replace_blocks>
+mathweb/flask/app.py
+\`\`\`python
+<<<<<<< SEARCH
+from flask import Flask
+=======
+import math
+from flask import Flask
+>>>>>>> REPLACE
+\`\`\`
+
+mathweb/flask/app.py
+\`\`\`python
+<<<<<<< SEARCH
+def factorial(n):
+    "compute factorial"
+
+    if n == 0:
+        return 1
+    else:
+        return n * factorial(n-1)
+
+=======
+>>>>>>> REPLACE
+\`\`\`
+
+mathweb/flask/app.py
+\`\`\`python
+<<<<<<< SEARCH
+    return str(factorial(n))
+=======
+    return str(math.factorial(n))
+>>>>>>> REPLACE
+\`\`\`
+</search_replace_blocks>
+
+### Example 2: Creating New File and Refactoring
+
+**User Request**: "Refactor hello() into its own file."
+
+**CORRECT Response Format** (NO explanations, ONLY the XML wrapper with blocks):
+
+<search_replace_blocks>
+hello.py
+\`\`\`python
+<<<<<<< SEARCH
+=======
+def hello():
+    "print a greeting"
+
+    print("hello")
+>>>>>>> REPLACE
+\`\`\`
+
+main.py
+\`\`\`python
+<<<<<<< SEARCH
+def hello():
+    "print a greeting"
+
+    print("hello")
+=======
+from hello import hello
+>>>>>>> REPLACE
+\`\`\`
+</search_replace_blocks>
+`;
+
+const PROMPT_FINAL_REMINDERS = `
+## Final Reminders
+
+- **YOUR ENTIRE RESPONSE MUST BE ONLY: \`<search_replace_blocks>\` followed by the blocks, then \`</search_replace_blocks>\`. NOTHING ELSE.**
+- **NO "Hello", NO "I've analyzed", NO "Here are the changes", NO explanations, NO descriptions, NO additional text.**
+- **DO NOT start with greetings, explanations, or analysis.**
+- **DO NOT end with "Let me know if you need help" or similar phrases.**
+- **ONLY EVER RETURN THE XML WRAPPER WITH SEARCH/REPLACE BLOCKS INSIDE!**
+- You are diligent and tireless! You NEVER leave comments describing code without implementing it!
+- You always COMPLETELY IMPLEMENT the needed code!
+- Do not improve, comment, fix or modify unrelated parts of the code in any way!
+
+**WRONG RESPONSE FORMAT:**
+"Hello! I've analyzed your code and here are the changes: <search_replace_blocks>..."
+
+**CORRECT RESPONSE FORMAT:**
+<search_replace_blocks>
+[blocks here]
+</search_replace_blocks>
+`;
+
+const getTaskHeader = (prompt: string, fileTree: string): string => `
+# Task
+
+- ${prompt}
+
+# File Map
+
+${fileTree}
+
+# Files
+
+- The following files are related to the Task.
+`;
+
 // --- Extension Activation ---
 export function activate(context: vscode.ExtensionContext) {
     const provider = new PastrViewProvider(context.extensionUri);
@@ -38,7 +204,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 // --- Main View Provider Class ---
-class PastrViewProvider implements vscode.WebviewViewProvider {
+export class PastrViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = PASTR_VIEW_TYPE;
     private _view?: vscode.WebviewView;
 
@@ -121,45 +287,83 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     }
 
 
-    // --- SEARCH/REPLACE Block Parsing Methods ---
+    // --- SEARCH/REPLACE Block Parsing Methods (public for testing) ---
 
     /**
-     * Parse SEARCH/REPLACE blocks from AI response content
+     * Robustly parse SEARCH/REPLACE blocks from AI response content.
+     * Handles file paths being inside or outside the fenced code block.
      */
-    private parseSearchReplaceBlocks(content: string): SearchReplaceBlock[] {
+    public parseSearchReplaceBlocks(content: string): SearchReplaceBlock[] {
         if (!content || typeof content !== 'string') {
             return [];
         }
 
-        // First, try to extract content from within <search_replace_blocks> tags
         let searchReplaceContent = content;
         const xmlTagRegex = /<search_replace_blocks>([\s\S]*?)<\/search_replace_blocks>/g;
         const xmlMatch = xmlTagRegex.exec(content);
 
         if (xmlMatch) {
-            // Use content within XML tags
             searchReplaceContent = xmlMatch[1];
         }
-        // If no XML tags found, fall back to parsing the entire content for backward compatibility
 
         const blocks: SearchReplaceBlock[] = [];
-        const fenceRegex = /```(\w+)?\s*\n([\s\S]*?)\n```/g;
-        let match;
+        const lines = searchReplaceContent.split('\n');
+
+        let currentFilePath: string | null = null;
+        let inFence = false;
+        let fenceContentLines: string[] = [];
+        let fenceLanguage = '';
         let blockIndex = 0;
 
-        while ((match = fenceRegex.exec(searchReplaceContent)) !== null) {
-            blockIndex++;
-            const language = match[1] || '';
-            const blockContent = match[2];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
 
-            try {
-                const block = this.extractBlockContent(blockContent, language, blockIndex);
-                if (block) {
-                    blocks.push(block);
+            if (line.startsWith('```')) {
+                if (inFence) {
+                    // --- End of a fenced block ---
+                    inFence = false;
+                    let filePathForBlock = currentFilePath;
+                    let blockContent = fenceContentLines.join('\n');
+
+                    // Check if file path is inside the block as the first line
+                    const firstLine = fenceContentLines[0]?.trim();
+                    if (firstLine && !firstLine.startsWith('<<<<<<< SEARCH')) {
+                        filePathForBlock = firstLine;
+                        blockContent = fenceContentLines.slice(1).join('\n');
+                    }
+
+                    if (filePathForBlock) {
+                        blockIndex++;
+                        const block = this.extractBlockContent(blockContent, fenceLanguage, filePathForBlock, blockIndex);
+                        if (block) {
+                            blocks.push(block);
+                        }
+                    } else {
+                        console.warn(`Skipping block ${blockIndex + 1}: no file path found.`);
+                    }
+
+                    // Reset for next block
+                    fenceContentLines = [];
+                } else {
+                    // --- Start of a new fenced block ---
+                    inFence = true;
+                    fenceLanguage = line.substring(3).trim();
+
+                    // The file path is likely the line just before this one.
+                    // We check the last non-empty line before the fence.
+                    for (let j = i - 1; j >= 0; j--) {
+                        const prevLine = lines[j].trim();
+                        if (prevLine) {
+                            // Heuristic to decide if it's a file path
+                            if (prevLine.includes('.') || prevLine.includes('/') || prevLine.includes('\\')) {
+                                currentFilePath = prevLine;
+                            }
+                            break; // Stop after finding the first non-empty line
+                        }
+                    }
                 }
-            } catch (error) {
-                // Continue parsing other blocks even if one fails
-                console.warn(`Failed to parse block ${blockIndex}:`, error);
+            } else if (inFence) {
+                fenceContentLines.push(line);
             }
         }
 
@@ -167,34 +371,14 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * Extract content from a single fenced block
+     * Extract content from a single block's content string.
+     * Assumes filePath is provided.
      */
-    private extractBlockContent(blockContent: string, language: string, blockIndex: number): SearchReplaceBlock | null {
+    public extractBlockContent(blockContent: string, language: string, filePath: string, blockIndex: number): SearchReplaceBlock | null {
         const lines = blockContent.split('\n');
 
-        if (lines.length < 2) {
-            return null; // Not enough content for a valid block
-        }
-
-        // First non-empty line should be the file path
-        let filePathIndex = -1;
-        let filePath = '';
-
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line && !line.startsWith('<<<<<<< SEARCH') && !line.startsWith('=======') && !line.startsWith('>>>>>>> REPLACE')) {
-                filePath = line;
-                filePathIndex = i;
-                break;
-            }
-        }
-
-        if (!filePath || filePathIndex === -1) {
-            return null; // No valid file path found
-        }
-
-        // Find SEARCH/REPLACE markers
-        const searchStartIndex = this.findMarkerIndex(lines, '<<<<<<< SEARCH', filePathIndex + 1);
+        // Find SEARCH/REPLACE markers, starting from line 0
+        const searchStartIndex = this.findMarkerIndex(lines, '<<<<<<< SEARCH', 0);
         const dividerIndex = this.findMarkerIndex(lines, '=======', searchStartIndex + 1);
         const replaceEndIndex = this.findMarkerIndex(lines, '>>>>>>> REPLACE', dividerIndex + 1);
 
@@ -202,11 +386,11 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
             return null; // Missing required markers
         }
 
-        // Extract SEARCH content (between <<<<<<< SEARCH and =======)
+        // Extract SEARCH content
         const searchLines = lines.slice(searchStartIndex + 1, dividerIndex);
         const searchContent = searchLines.join('\n');
 
-        // Extract REPLACE content (between ======= and >>>>>>> REPLACE)
+        // Extract REPLACE content
         const replaceLines = lines.slice(dividerIndex + 1, replaceEndIndex);
         const replaceContent = replaceLines.join('\n');
 
@@ -220,10 +404,11 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
+
     /**
      * Find the index of a marker line starting from a given position
      */
-    private findMarkerIndex(lines: string[], marker: string, startIndex: number): number {
+    public findMarkerIndex(lines: string[], marker: string, startIndex: number): number {
         for (let i = startIndex; i < lines.length; i++) {
             if (lines[i].trim() === marker) {
                 return i;
@@ -235,7 +420,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     /**
      * Validate a SEARCH/REPLACE block for correctness
      */
-    private validateSearchReplaceBlock(block: SearchReplaceBlock): { valid: boolean; errors: string[] } {
+    public validateSearchReplaceBlock(block: SearchReplaceBlock): { valid: boolean; errors: string[] } {
         const errors: string[] = [];
 
         // Validate file path
@@ -244,7 +429,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         }
 
         // Check for invalid characters in file path
-        if (block.filePath.includes('..') || block.filePath.startsWith('/')) {
+        if (block.filePath.includes('..') || path.isAbsolute(block.filePath)) {
             errors.push('File path contains invalid characters or is absolute');
         }
 
@@ -264,12 +449,12 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
-    // --- SEARCH/REPLACE Block Application Methods ---
+    // --- SEARCH/REPLACE Block Application Methods (public for testing) ---
 
     /**
      * Apply SEARCH/REPLACE blocks with comprehensive error handling
      */
-    private async applySearchReplaceBlocks(content: string, workspacePath: string): Promise<ApplyResult> {
+    public async applySearchReplaceBlocks(content: string, workspacePath: string): Promise<ApplyResult> {
         const result: ApplyResult = {
             success: false,
             message: '',
@@ -352,7 +537,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     /**
      * Apply a single SEARCH/REPLACE block
      */
-    private async applySearchReplaceBlock(block: SearchReplaceBlock, workspacePath: string): Promise<ApplyResult> {
+    public async applySearchReplaceBlock(block: SearchReplaceBlock, workspacePath: string): Promise<ApplyResult> {
         const result: ApplyResult = {
             success: false,
             message: '',
@@ -394,7 +579,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     /**
      * Create a new file with the specified content
      */
-    private async createNewFile(filePath: string, content: string): Promise<void> {
+    public async createNewFile(filePath: string, content: string): Promise<void> {
         // Ensure directory exists
         const dir = path.dirname(filePath);
         if (!fs.existsSync(dir)) {
@@ -413,7 +598,7 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     /**
      * Find and replace content in an existing file
      */
-    private async findAndReplaceInFile(filePath: string, searchContent: string, replaceContent: string): Promise<ApplyResult> {
+    public async findAndReplaceInFile(filePath: string, searchContent: string, replaceContent: string): Promise<ApplyResult> {
         const result: ApplyResult = {
             success: false,
             message: '',
@@ -424,93 +609,32 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
         };
 
         try {
-            // Check if file exists
             if (!fs.existsSync(filePath)) {
                 result.message = `File not found: ${filePath}`;
                 result.errors.push(`File does not exist: ${filePath}`);
                 return result;
             }
 
-            // Read current file content
             const currentContent = fs.readFileSync(filePath, 'utf8');
-
-            // Handle empty replace content (deletion)
-            if (replaceContent.trim() === '' && searchContent.trim() !== '') {
-                // This is a deletion operation
-                if (!currentContent.includes(searchContent)) {
-                    result.message = `Search content not found in file: ${path.basename(filePath)}`;
-                    result.errors.push('Search content does not match any part of the file');
-                    return result;
-                }
-
-                const newContent = currentContent.replace(searchContent, '');
-                fs.writeFileSync(filePath, newContent, 'utf8');
-                result.success = true;
-                result.message = `Deleted content from: ${path.basename(filePath)}`;
-                return result;
-            }
-
-            // Normal search and replace
-            if (!currentContent.includes(searchContent)) {
-                result.message = `Search content not found in file: ${path.basename(filePath)}`;
-                result.errors.push('Search content does not match any part of the file exactly');
-
-                // Provide helpful debugging info
-                const lines = currentContent.split('\n');
-                const searchLines = searchContent.split('\n');
-
-                // Check if content exists with different whitespace
-                let foundWithDifferentWhitespace = false;
-
-                if (searchLines.length === 1) {
-                    // Single line search - check if it exists with different whitespace
-                    const trimmedSearch = searchContent.trim();
-                    const matchingLines = lines.filter(line => line.trim() === trimmedSearch);
-                    if (matchingLines.length > 0) {
-                        foundWithDifferentWhitespace = true;
-                    }
-                } else {
-                    // Multi-line search - check if all lines exist with different whitespace
-                    const trimmedSearchLines = searchLines.map(line => line.trim());
-                    let allLinesFound = true;
-
-                    for (const trimmedSearchLine of trimmedSearchLines) {
-                        if (trimmedSearchLine === '') {
-                            continue; // Skip empty lines
-                        }
-                        const matchingLines = lines.filter(line => line.trim() === trimmedSearchLine);
-                        if (matchingLines.length === 0) {
-                            allLinesFound = false;
-                            break;
-                        }
-                    }
-
-                    if (allLinesFound && trimmedSearchLines.some(line => line !== '')) {
-                        foundWithDifferentWhitespace = true;
-                    }
-                }
-
-                if (foundWithDifferentWhitespace) {
-                    result.warnings.push('Search content found with different whitespace. Ensure exact character match including spaces and tabs.');
-                }
-
-                return result;
-            }
-
-            // Perform the replacement (only first occurrence as per Aider rules)
             const newContent = currentContent.replace(searchContent, replaceContent);
 
-            // Verify the replacement actually changed something
             if (newContent === currentContent) {
-                result.message = `No changes made to file: ${path.basename(filePath)}`;
-                result.warnings.push('Search and replace content are identical');
-                result.success = true; // Still consider it successful
+                // Exact match failed, let's check for whitespace differences
+                const currentTrimmed = currentContent.replace(/\s+/g, ' ').trim();
+                const searchTrimmed = searchContent.replace(/\s+/g, ' ').trim();
+
+                if (currentTrimmed.includes(searchTrimmed)) {
+                    result.message = `Search content not found in file: ${path.basename(filePath)}`;
+                    result.errors.push('Search content does not match any part of the file exactly');
+                    result.warnings.push('A similar block was found, but whitespace (spaces, tabs, newlines) does not match. Please ensure the SEARCH block is an exact copy.');
+                } else {
+                    result.message = `Search content not found in file: ${path.basename(filePath)}`;
+                    result.errors.push('Search content does not match any part of the file');
+                }
                 return result;
             }
 
-            // Write the modified content back
             fs.writeFileSync(filePath, newContent, 'utf8');
-
             result.success = true;
             result.message = `Successfully modified: ${path.basename(filePath)}`;
 
@@ -528,9 +652,9 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     private async buildContextString(prompt: string, tabs: vscode.Tab[], workspacePath: string): Promise<string> {
         const filePaths = tabs.map(tab => vscode.workspace.asRelativePath((tab.input as vscode.TabInputText).uri));
         const fileTree = this.generateFileTree(filePaths, path.basename(workspacePath));
-        
+
         const promptHeader = this.getPromptHeader(prompt, fileTree);
-        
+
         const fileContents = await Promise.all(tabs.map(async tab => {
             const document = await vscode.workspace.openTextDocument((tab.input as vscode.TabInputText).uri);
             const relativePath = vscode.workspace.asRelativePath(document.uri);
@@ -541,168 +665,19 @@ class PastrViewProvider implements vscode.WebviewViewProvider {
     }
 
     private getPromptHeader(prompt: string, fileTree: string): string {
-        return `# Instructions
-
-## Role
-
-- Act as an **code editing assistant**: You can fulfill edit requests and chat with the user about code or other questions.
-
-## Output format
-
-**CRITICAL: Your response must ONLY contain the \`<search_replace_blocks>\` XML wrapper with SEARCH/REPLACE blocks inside. NO explanations, NO descriptions, NO additional text before or after the XML wrapper.**
-
-### SEARCH/REPLACE Block Rules
-
-Every *SEARCH/REPLACE block* must use this format:
-
-1. **The *FULL* file path alone on a line, verbatim.** No bold asterisks, no quotes around it, no escaping of characters, etc.
-2. **The opening fence and code language**, eg: \`\`\`python
-3. **The start of search block**: \`<<<<<<< SEARCH\`
-4. **A contiguous chunk of lines to search for in the existing source code**
-5. **The dividing line**: \`=======\`
-6. **The lines to replace into the source code**
-7. **The end of the replace block**: \`>>>>>>> REPLACE\`
-8. **The closing fence**: \`\`\`
-
-#### Critical Rules
-
-- **Your entire response must be ONLY: \`<search_replace_blocks>\` followed by the blocks, then \`</search_replace_blocks>\`. Nothing else.**
-- **NO explanations, NO descriptions, NO "Here are the changes", NO "I've analyzed", NO additional text.**
-- Use the *FULL* file path, as shown to you by the user.
-- Every *SEARCH* section must *EXACTLY MATCH* the existing file content, character for character, including all comments, docstrings, etc.
-- If the file contains code or other data wrapped/escaped in json/xml/quotes or other containers, you need to propose edits to the literal contents of the file, including the container markup.
-- *SEARCH/REPLACE* blocks will *only* replace the first match occurrence.
-- Include multiple unique *SEARCH/REPLACE* blocks if needed.
-- Include enough lines in each SEARCH section to uniquely match each set of lines that need to change.
-- Keep *SEARCH/REPLACE* blocks concise.
-- Break large *SEARCH/REPLACE* blocks into a series of smaller blocks that each change a small portion of the file.
-- Include just the changing lines, and a few surrounding lines if needed for uniqueness.
-- Do not include long runs of unchanging lines in *SEARCH/REPLACE* blocks.
-- Only create *SEARCH/REPLACE* blocks for files that the user has added to the chat!
-
-**To move code within a file**: Use 2 *SEARCH/REPLACE* blocks: 1 to delete it from its current location, 1 to insert it in the new location.
-
-**Pay attention to which filenames** the user wants you to edit, especially if they are asking you to create a new file.
-
-**If you want to put code in a new file**, use a *SEARCH/REPLACE block* with:
-- A new file path, including dir name if needed
-- An empty \`SEARCH\` section
-- The new file's contents in the \`REPLACE\` section
-
-## Examples
-
-### Example 1: Modifying Existing Code
-
-**User Request**: "Change get_factorial() to use math.factorial"
-
-**CORRECT Response Format** (NO explanations, ONLY the XML wrapper with blocks):
-
-<search_replace_blocks>
-mathweb/flask/app.py
-\`\`\`python
-<<<<<<< SEARCH
-from flask import Flask
-=======
-import math
-from flask import Flask
->>>>>>> REPLACE
-\`\`\`
-
-mathweb/flask/app.py
-\`\`\`python
-<<<<<<< SEARCH
-def factorial(n):
-    "compute factorial"
-
-    if n == 0:
-        return 1
-    else:
-        return n * factorial(n-1)
-
-=======
->>>>>>> REPLACE
-\`\`\`
-
-mathweb/flask/app.py
-\`\`\`python
-<<<<<<< SEARCH
-    return str(factorial(n))
-=======
-    return str(math.factorial(n))
->>>>>>> REPLACE
-\`\`\`
-</search_replace_blocks>
-
-### Example 2: Creating New File and Refactoring
-
-**User Request**: "Refactor hello() into its own file."
-
-**CORRECT Response Format** (NO explanations, ONLY the XML wrapper with blocks):
-
-<search_replace_blocks>
-hello.py
-\`\`\`python
-<<<<<<< SEARCH
-=======
-def hello():
-    "print a greeting"
-
-    print("hello")
->>>>>>> REPLACE
-\`\`\`
-
-main.py
-\`\`\`python
-<<<<<<< SEARCH
-def hello():
-    "print a greeting"
-
-    print("hello")
-=======
-from hello import hello
->>>>>>> REPLACE
-\`\`\`
-</search_replace_blocks>
-
-## Final Reminders
-
-- **YOUR ENTIRE RESPONSE MUST BE ONLY: \`<search_replace_blocks>\` followed by the blocks, then \`</search_replace_blocks>\`. NOTHING ELSE.**
-- **NO "Hello", NO "I've analyzed", NO "Here are the changes", NO explanations, NO descriptions, NO additional text.**
-- **DO NOT start with greetings, explanations, or analysis.**
-- **DO NOT end with "Let me know if you need help" or similar phrases.**
-- **ONLY EVER RETURN THE XML WRAPPER WITH SEARCH/REPLACE BLOCKS INSIDE!**
-- You are diligent and tireless! You NEVER leave comments describing code without implementing it!
-- You always COMPLETELY IMPLEMENT the needed code!
-- Do not improve, comment, fix or modify unrelated parts of the code in any way!
-
-**WRONG RESPONSE FORMAT:**
-"Hello! I've analyzed your code and here are the changes: <search_replace_blocks>..."
-
-**CORRECT RESPONSE FORMAT:**
-<search_replace_blocks>
-[blocks here]
-</search_replace_blocks>
-
-# Task
-
-- ${prompt}
-
-# File Map
-
-${fileTree}
-
-# Files
-
-- The following files are related to the Task.
-
-`;
+        return [
+            PROMPT_ROLE,
+            PROMPT_RULES,
+            PROMPT_EXAMPLES,
+            PROMPT_FINAL_REMINDERS,
+            getTaskHeader(prompt, fileTree)
+        ].join('');
     }
-    
+
     private async handleApplyResult(result: ApplyResult, originalContent: string) {
         if (result.success) {
             vscode.window.showInformationMessage(`${PAST_EMOJI} ${result.message}`);
 
-            // Handle warnings
             if (result.warnings.length > 0) {
                 const choice = await vscode.window.showWarningMessage(
                     `${PAST_EMOJI} Changes applied with ${result.warnings.length} warning(s).`,
@@ -713,7 +688,6 @@ ${fileTree}
                 }
             }
 
-            // Handle errors that occurred during successful partial application
             if (result.errors.length > 0) {
                 const choice = await vscode.window.showWarningMessage(
                     `${PAST_EMOJI} Some blocks failed to apply (${result.errors.length} error(s)).`,
@@ -725,7 +699,12 @@ ${fileTree}
             }
         } else {
             const choices = ['View Details', 'Retry'];
-            const choice = await vscode.window.showErrorMessage(`${PAST_EMOJI} ${result.message}`, ...choices);
+            let message = `${PAST_EMOJI} ${result.message}`;
+            if (result.warnings.length > 0) {
+                message += ` (${result.warnings[0]})`;
+            }
+
+            const choice = await vscode.window.showErrorMessage(message, ...choices);
 
             if (choice === 'View Details' && result.errors.length > 0) {
                 vscode.window.showErrorMessage(`${PAST_EMOJI} Error details:\n• ${result.errors.join('\n• ')}`);
@@ -741,7 +720,7 @@ ${fileTree}
             vscode.env.openExternal(vscode.Uri.parse('https://github.com/your-repo/issues/new'));
         }
     }
-    
+
     private getWorkspacePath(): string | undefined {
         const folders = vscode.workspace.workspaceFolders;
         if (folders && folders.length > 0) {
