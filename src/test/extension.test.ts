@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { parseSearchReplaceBlocks, validateSearchReplaceBlock } from '../lib/parser';
 import { applySearchReplaceBlocks } from '../lib/applicator';
-import { generateFileTree, getNonce } from '../lib/utils';
+import { generateFileTree, getNonce, getWorkspaceFilesWithGlob } from '../lib/utils';
 import type { SearchReplaceBlock } from '../lib/types';
 
 suite('Pastr Extension Test Suite', () => {
@@ -349,4 +349,131 @@ wont be applied
 			assert.strictEqual(tree, 'empty-project\n');
 		});
     });
-});
+
+		suite('File Export (getWorkspaceFilesWithGlob)', () => {
+			let testWorkspace: string;
+
+			setup(() => {
+				testWorkspace = fs.mkdtempSync(path.join(tempDir, 'export-test-'));
+			});
+
+			teardown(() => {
+				if (fs.existsSync(testWorkspace)) {
+					fs.rmSync(testWorkspace, { recursive: true, force: true });
+				}
+			});
+
+			test('Should find all files in workspace', async () => {
+				// Create test files
+				fs.writeFileSync(path.join(testWorkspace, 'test.js'), 'console.log("test");');
+				fs.writeFileSync(path.join(testWorkspace, 'README.md'), '# Test Project');
+
+				// Create subdirectory with file
+				const subDir = path.join(testWorkspace, 'src');
+				fs.mkdirSync(subDir);
+				fs.writeFileSync(path.join(subDir, 'main.ts'), 'export const main = () => {};');
+
+				const files = await getWorkspaceFilesWithGlob(testWorkspace);
+
+				assert.ok(files.length >= 3, `Expected at least 3 files, got ${files.length}`);
+
+				const filePaths = files.map((uri: vscode.Uri) => path.relative(testWorkspace, uri.fsPath));
+				assert.ok(filePaths.includes('test.js'));
+				assert.ok(filePaths.includes('README.md'));
+				assert.ok(filePaths.includes(path.join('src', 'main.ts')));
+			});
+
+			test('Should exclude binary files', async () => {
+				// Create test files including binary ones
+				fs.writeFileSync(path.join(testWorkspace, 'test.js'), 'console.log("test");');
+				fs.writeFileSync(path.join(testWorkspace, 'image.png'), Buffer.from('fake png data'));
+				fs.writeFileSync(path.join(testWorkspace, 'font.woff'), Buffer.from('fake font data'));
+
+				const files = await getWorkspaceFilesWithGlob(testWorkspace);
+				const filePaths = files.map((uri: vscode.Uri) => path.relative(testWorkspace, uri.fsPath));
+
+				assert.ok(filePaths.includes('test.js'));
+				assert.ok(!filePaths.includes('image.png'));
+				assert.ok(!filePaths.includes('font.woff'));
+			});
+
+			test('Should respect .gitignore', async () => {
+				// Create .gitignore
+				fs.writeFileSync(path.join(testWorkspace, '.gitignore'), 'ignored.txt\ntemp/\n');
+
+				// Create files
+				fs.writeFileSync(path.join(testWorkspace, 'test.js'), 'console.log("test");');
+				fs.writeFileSync(path.join(testWorkspace, 'ignored.txt'), 'should be ignored');
+
+				// Create temp directory with file
+				const tempDir = path.join(testWorkspace, 'temp');
+				fs.mkdirSync(tempDir);
+				fs.writeFileSync(path.join(tempDir, 'temp.txt'), 'temp file');
+
+				const files = await getWorkspaceFilesWithGlob(testWorkspace);
+				const filePaths = files.map((uri: vscode.Uri) => path.relative(testWorkspace, uri.fsPath));
+
+
+
+				assert.ok(filePaths.includes('test.js'));
+				assert.ok(!filePaths.includes('ignored.txt'));
+				assert.ok(!filePaths.some(p => p.startsWith('temp')), `Found temp files: ${filePaths.filter(p => p.startsWith('temp'))}`);
+			});
+
+			test('Should exclude node_modules and common build directories', async () => {
+				// Create files in excluded directories
+				const nodeModulesDir = path.join(testWorkspace, 'node_modules');
+				const distDir = path.join(testWorkspace, 'dist');
+				fs.mkdirSync(nodeModulesDir);
+				fs.mkdirSync(distDir);
+
+				fs.writeFileSync(path.join(testWorkspace, 'test.js'), 'console.log("test");');
+				fs.writeFileSync(path.join(nodeModulesDir, 'package.js'), 'module.exports = {};');
+				fs.writeFileSync(path.join(distDir, 'bundle.js'), 'bundled code');
+
+				const files = await getWorkspaceFilesWithGlob(testWorkspace);
+				const filePaths = files.map((uri: vscode.Uri) => path.relative(testWorkspace, uri.fsPath));
+
+				assert.ok(filePaths.includes('test.js'));
+				assert.ok(!filePaths.some(p => p.startsWith('node_modules')));
+				assert.ok(!filePaths.some(p => p.startsWith('dist')));
+			});
+
+			test('Should exclude dotfiles and config files', async () => {
+				// Create test files including dotfiles and config files
+				fs.writeFileSync(path.join(testWorkspace, 'test.js'), 'console.log("test");');
+				fs.writeFileSync(path.join(testWorkspace, 'package-lock.json'), '{}');
+				fs.writeFileSync(path.join(testWorkspace, '.npmrc'), 'registry=...');
+				fs.writeFileSync(path.join(testWorkspace, '.prettierignore'), '*.min.js');
+				fs.writeFileSync(path.join(testWorkspace, '.env'), 'SECRET=value');
+				fs.writeFileSync(path.join(testWorkspace, '.eslintrc.json'), '{}');
+
+				// Create dot directories
+				const svelteKitDir = path.join(testWorkspace, '.svelte-kit');
+				const nextDir = path.join(testWorkspace, '.next');
+				fs.mkdirSync(svelteKitDir);
+				fs.mkdirSync(nextDir);
+				fs.writeFileSync(path.join(svelteKitDir, 'generated.js'), 'generated code');
+				fs.writeFileSync(path.join(nextDir, 'build.js'), 'build code');
+
+				const files = await getWorkspaceFilesWithGlob(testWorkspace);
+				const filePaths = files.map((uri: vscode.Uri) => path.relative(testWorkspace, uri.fsPath));
+
+				// Should include regular files
+				assert.ok(filePaths.includes('test.js'));
+
+				// Should exclude lock files
+				assert.ok(!filePaths.includes('package-lock.json'));
+
+				// Should exclude config files
+				assert.ok(!filePaths.includes('.npmrc'));
+				assert.ok(!filePaths.includes('.prettierignore'));
+				assert.ok(!filePaths.includes('.env'));
+				assert.ok(!filePaths.includes('.eslintrc.json'));
+
+				// Should exclude dot directories
+				assert.ok(!filePaths.some(p => p.startsWith('.svelte-kit')));
+				assert.ok(!filePaths.some(p => p.startsWith('.next')));
+			});
+		});
+	});

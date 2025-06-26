@@ -57,5 +57,9 @@
     "@vscode/test-electron": "^2.4.1",
     "eslint": "^9.23.0",
     "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@types/glob": "^8.1.0",
+    "glob": "^11.0.3"
   }
 }

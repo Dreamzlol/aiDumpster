@@ -19,7 +19,7 @@
                 Generate, refactor, and debug code with AI assistance.
             </p>
             <div class="flex flex-col items-center justify-center px-5 py-2.5 gap-4">
-                <div class="flex items-center gap-2 max-w-[250px]"><span><strong>Context</strong>: Open the files you want to include as context.</span></div>
+                <div class="flex items-center gap-2 max-w-[250px]"><span><strong>Context</strong>: <span id="context-instruction">Open the files you want to include as context.</span></span></div>
                 <div class="flex items-center gap-2 max-w-[250px]"><span><strong>Task</strong>: Type your task and click Generate & Copy.</span></div>
                 <div class="flex items-center gap-2 max-w-[250px]"><span><strong>AI Provider</strong>: Paste the context into your AI provider's web UI.</span></div>
                 <div class="flex items-center gap-2 max-w-[250px]"><span><strong>Apply Changes</strong>: Paste the AI response below and click Apply.</span></div>
@@ -28,12 +28,20 @@
     </div>
     <!-- Interactive Elements -->
     <div class="relative flex flex-col gap-2 m-2 p-1.5 w-[calc(100%-16px)] ml-auto mr-auto box-border">
+        <div class="flex items-center justify-center gap-2 mb-2 text-sm">
+            <span>Clipboard</span>
+            <label for="mode-toggle" class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" value="" id="mode-toggle" class="sr-only peer">
+                <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-sky-600"></div>
+            </label>
+            <span>File Export</span>
+        </div>
         <div class="relative">
             <textarea id="prompt" placeholder="Type your task here..." class="w-full rounded-md py-1.5 px-2 border-1 border-gray-800 focus:border-blue-600 min-h-[90px] resize-none overflow-x-hidden overflow-y-auto pr-2 flex-none border-x flex-grow z-[2] scrollbar-none" style="height: 62px !important;"></textarea>
         </div>
         <button id="btn-generate" class="bg-sky-600 hover:bg-sky-700 rounded-md cursor-pointer text-white py-2 px-4 flex items-center justify-center gap-2">
             <img src="{{generateIconUri}}" alt="Generate Icon" class="h-6">
-            Generate & Copy
+            <span id="generate-btn-text">Generate & Copy</span>
         </button>
         <hr class="my-4 border-gray-800 mx-4">
         <div class="relative">

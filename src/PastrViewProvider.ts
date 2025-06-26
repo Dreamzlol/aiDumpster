@@ -4,7 +4,7 @@ import * as path from 'path';
 import { PASTR_VIEW_TYPE, CONTEXT_FILENAME, PAST_EMOJI } from './lib/constants';
 import { PROMPT_ROLE, PROMPT_RULES, PROMPT_EXAMPLES, PROMPT_FINAL_REMINDERS, getTaskHeader } from './lib/prompts';
 import { applySearchReplaceBlocks } from './lib/applicator';
-import { getNonce, generateFileTree } from './lib/utils';
+import { getNonce, generateFileTree, getWorkspaceFiles } from './lib/utils';
 import type { ApplyResult } from './lib/types';
 
 /**
@@ -35,78 +35,131 @@ export class PastrViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private async handleMessage(data: { command: string; payload: any }) {
-        switch (data.command) {
-            case 'generate':
-                await this.generateContext(data.payload.prompt);
-                break;
-            case 'apply':
-                await this.applyChanges(data.payload.diff);
-                break;
-            case 'showError':
-                vscode.window.showErrorMessage(`${PAST_EMOJI} ${data.payload.message}`);
-                break;
-        }
+
+
+
+
+private async handleMessage(data: { command: string; payload: any }) {
+    switch (data.command) {
+        case 'generate':
+            await this.generateContext(data.payload.prompt, data.payload.mode);
+            break;
+        case 'apply':
+            await this.applyChanges(data.payload.diff);
+            break;
+        case 'showError':
+            vscode.window.showErrorMessage(`${PAST_EMOJI} ${data.payload.message}`);
+            break;
+    }
+}
+
+private async generateContext(prompt: string, mode?: 'clipboard' | 'file') {
+    const workspacePath = this.getWorkspacePath();
+    if (!workspacePath) {
+        return;
     }
 
-    private async generateContext(prompt: string) {
-        const workspacePath = this.getWorkspacePath();
-        if (!workspacePath) {
+    try {
+        // Ensure we handle the mode correctly
+        const actualMode = mode || 'clipboard';
+
+        if (actualMode === 'file') {
+            await this.generateFileExportContext(prompt, workspacePath);
+        } else {
+            await this.generateClipboardContext(prompt, workspacePath);
+        }
+    } catch (error) {
+        vscode.window.showErrorMessage(`${PAST_EMOJI} Failed to generate context: ${error}`);
+    }
+}
+
+private async generateClipboardContext(prompt: string, workspacePath: string) {
+    const openTabs = this.getOpenEditorTabs();
+    if (openTabs.length === 0) {
+        vscode.window.showInformationMessage(`${PAST_EMOJI} No open files to use as context.`);
+        return;
+    }
+
+    const tabUris = openTabs.map(tab => (tab.input as vscode.TabInputText).uri);
+    const contextContent = await this.buildContextStringFromUris(prompt, tabUris, workspacePath);
+
+    await vscode.env.clipboard.writeText(contextContent);
+    vscode.window.showInformationMessage(`${PAST_EMOJI} Context copied to clipboard!`);
+}
+
+private async generateFileExportContext(prompt: string, workspacePath: string) {
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Pastr: Exporting codebase...",
+        cancellable: false
+    }, async (progress) => {
+        progress.report({ increment: 0, message: "Finding files..." });
+
+        const allFiles = await getWorkspaceFiles(workspacePath);
+
+        if (allFiles.length === 0) {
+            vscode.window.showInformationMessage(`${PAST_EMOJI} No files found in the workspace to export.`);
             return;
         }
+        progress.report({ increment: 20, message: `Found ${allFiles.length} files. Building context...` });
 
-        const openTabs = this.getOpenEditorTabs();
-        if (openTabs.length === 0) {
-            vscode.window.showInformationMessage(`${PAST_EMOJI} No open files to use as context.`);
-            return;
-        }
+        const contextContent = await this.buildContextStringFromUris(prompt, allFiles, workspacePath);
 
+        progress.report({ increment: 80, message: "Saving to file..." });
+        const contextFilePath = path.join(workspacePath, CONTEXT_FILENAME);
+
+        fs.writeFileSync(contextFilePath, contextContent);
+
+        progress.report({ increment: 100 });
+    });
+
+    const openDoc = await vscode.workspace.openTextDocument(path.join(workspacePath, CONTEXT_FILENAME));
+    await vscode.window.showTextDocument(openDoc);
+    vscode.window.showInformationMessage(`${PAST_EMOJI} Codebase exported to ${CONTEXT_FILENAME}!`);
+}
+
+private async applyChanges(responseContent: string) {
+    if (!responseContent?.trim()) {
+        vscode.window.showInformationMessage(`${PAST_EMOJI} No response provided to apply.`);
+        return;
+    }
+
+    const workspacePath = this.getWorkspacePath();
+    if (!workspacePath) {
+        return;
+    }
+
+    try {
+        const result = await applySearchReplaceBlocks(responseContent, workspacePath);
+        await this.handleApplyResult(result, responseContent);
+    } catch (error: any) {
+        this.handleApplyError(error);
+    }
+}
+
+private async buildContextStringFromUris(prompt: string, fileUris: vscode.Uri[], workspacePath: string): Promise<string> {
+    const filePaths = fileUris.map(uri => vscode.workspace.asRelativePath(uri));
+    const fileTree = generateFileTree(filePaths, path.basename(workspacePath));
+
+    const promptHeader = this.getPromptHeader(prompt, fileTree);
+
+    const fileContents = await Promise.all(fileUris.map(async uri => {
         try {
-            const contextContent = await this.buildContextString(prompt, openTabs, workspacePath);
-            const contextFilePath = path.join(workspacePath, CONTEXT_FILENAME);
-
-            fs.writeFileSync(contextFilePath, contextContent);
-            await vscode.env.clipboard.writeText(contextContent);
-
-            vscode.window.showInformationMessage(`${PAST_EMOJI} Context copied to clipboard!`);
-        } catch (error) {
-            vscode.window.showErrorMessage(`${PAST_EMOJI} Failed to generate context: ${error}`);
-        }
-    }
-
-    private async applyChanges(responseContent: string) {
-        if (!responseContent?.trim()) {
-            vscode.window.showInformationMessage(`${PAST_EMOJI} No response provided to apply.`);
-            return;
-        }
-
-        const workspacePath = this.getWorkspacePath();
-        if (!workspacePath) {
-            return;
-        }
-
-        try {
-            const result = await applySearchReplaceBlocks(responseContent, workspacePath);
-            await this.handleApplyResult(result, responseContent);
-        } catch (error: any) {
-            this.handleApplyError(error);
-        }
-    }
-
-    private async buildContextString(prompt: string, tabs: vscode.Tab[], workspacePath: string): Promise<string> {
-        const filePaths = tabs.map(tab => vscode.workspace.asRelativePath((tab.input as vscode.TabInputText).uri));
-        const fileTree = generateFileTree(filePaths, path.basename(workspacePath));
-
-        const promptHeader = this.getPromptHeader(prompt, fileTree);
-
-        const fileContents = await Promise.all(tabs.map(async tab => {
-            const document = await vscode.workspace.openTextDocument((tab.input as vscode.TabInputText).uri);
+            const document = await vscode.workspace.openTextDocument(uri);
             const relativePath = vscode.workspace.asRelativePath(document.uri);
             return `## ${relativePath}\n\n\`\`\`${document.languageId}\n${document.getText()}\n\`\`\`\n\n`;
-        }));
+        } catch (e) {
+            console.warn(`Pastr: Could not read file ${uri.fsPath}. Skipping. Error: ${e}`);
+            return '';
+        }
+    }));
 
-        return promptHeader + fileContents.join('');
-    }
+    return promptHeader + fileContents.filter(c => c).join('');
+}
+
+
+
+
 
     private getPromptHeader(prompt: string, fileTree: string): string {
         return [
